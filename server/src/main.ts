@@ -1,54 +1,44 @@
+import { randomUUID } from "crypto";
 import dotenv from "dotenv";
 import fastify from "fastify";
-import fastifyCors = require("@fastify/cors");
+import fastifyCors from "@fastify/cors";
 import fastifyIO from "fastify-socket.io";
 import Redis from "ioredis";
 import closeWithGrace from "close-with-grace";
-import { randomUUID } from "crypto";
 
 dotenv.config();
 
-const PORT = parseInt(process.env.PORT || "3000", 10);
+const PORT = parseInt(process.env.PORT || "3001", 10);
 const HOST = process.env.HOST || "0.0.0.0";
-// const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:3000";
-const CORS_ORIGIN = "http://localhost:3000";
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:3000";
 const UPSTASH_REDIS_REST_URI = process.env.UPSTASH_REDIS_REST_URI;
-const methods = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 const CONNECTION_COUNT_KEY = "chat:connection-count";
 const CONNECTION_COUNT_UPDATED_CHANNEL = "chat:connection-count-updated";
 const NEW_MESSAGE_CHANNEL = "chat:new-message";
-// const MESSAGES_KEY = "chat:messages";
 
-// function sendMessageToRoom({ room, messageContents }) {
-//   const channel = `chat:${room}:messages`;
-// }
-
-// Publisher and Subscriber instances
 if (!UPSTASH_REDIS_REST_URI) {
-  console.error("UPSTASH_REDIS_REST_URI is not defined");
+  console.error("missing UPSTASH_REDIS_REST_URI");
   process.exit(1);
 }
 
-const publisher = new Redis(UPSTASH_REDIS_REST_URI, {});
-const subscriber = new Redis(UPSTASH_REDIS_REST_URI);
+const publisher = new Redis(UPSTASH_REDIS_REST_URI, {
+  connectTimeout: 10000,
+});
+const subscriber = new Redis(UPSTASH_REDIS_REST_URI, {
+  connectTimeout: 10000,
+});
 
 let connectedClients = 0;
 
 async function buildServer() {
-  const server = fastify();
+  const app = fastify();
 
-  await server.register(fastifyCors, {
-    origin: "*",
-    methods: methods,
+  await app.register(fastifyCors, {
+    origin: CORS_ORIGIN,
   });
 
-  await server.register(fastifyIO, {
-    cors: {
-      origin: CORS_ORIGIN,
-      methods: methods,
-    },
-  });
+  await app.register(fastifyIO);
 
   const currentCount = await publisher.get(CONNECTION_COUNT_KEY);
 
@@ -56,33 +46,43 @@ async function buildServer() {
     await publisher.set(CONNECTION_COUNT_KEY, 0);
   }
 
-  /* @ts-ignore */
-  server.io.on("connection", async (io: any) => {
-    console.log("Client connected");
+  // @ts-ignore
+  app.io.on("connection", async (io) => {
+    if (connectedClients === 0) {
+      publisher.set(CONNECTION_COUNT_KEY, 0);
+    }
 
     const incResult = await publisher.incr(CONNECTION_COUNT_KEY);
 
     connectedClients++;
+    console.log("ConnectedClients: ", connectedClients);
 
     await publisher.publish(
       CONNECTION_COUNT_UPDATED_CHANNEL,
       String(incResult)
     );
 
-    io.on(NEW_MESSAGE_CHANNEL, async ({ message }) => {
-      publisher.publish(NEW_MESSAGE_CHANNEL, message.toString());
+    // @ts-ignore
+    io.on(NEW_MESSAGE_CHANNEL, async (payload) => {
+      const message = payload.message;
+
+      if (!message) {
+        return;
+      }
+
+      console.log("New message recieved: ", message);
+      await publisher.publish(NEW_MESSAGE_CHANNEL, message.toString());
     });
 
     io.on("disconnect", async () => {
-      console.log("Client disconnected");
-
-      const decResult = await publisher.decr(CONNECTION_COUNT_KEY);
-
       connectedClients--;
+      console.log("ConnectedClients: ", connectedClients);
+
+      const decrResult = await publisher.decr(CONNECTION_COUNT_KEY);
 
       await publisher.publish(
         CONNECTION_COUNT_UPDATED_CHANNEL,
-        String(decResult)
+        String(decrResult)
       );
     });
   });
@@ -90,40 +90,42 @@ async function buildServer() {
   subscriber.subscribe(CONNECTION_COUNT_UPDATED_CHANNEL, (err, count) => {
     if (err) {
       console.error(
-        `Error subscribing to ${CONNECTION_COUNT_UPDATED_CHANNEL} channel`,
+        `Error subscribing to ${CONNECTION_COUNT_UPDATED_CHANNEL}`,
         err
       );
       return;
     }
 
     console.log(
-      `${count} clients connected to ${CONNECTION_COUNT_UPDATED_CHANNEL} channel`
+      `${count} clients subscribes to ${CONNECTION_COUNT_UPDATED_CHANNEL} channel`
     );
   });
 
   subscriber.subscribe(NEW_MESSAGE_CHANNEL, (err, count) => {
     if (err) {
-      console.error(`Error subscribing to ${NEW_MESSAGE_CHANNEL} channel`, err);
+      console.error(`Error subscribing to ${NEW_MESSAGE_CHANNEL}`);
       return;
     }
 
-    console.log(`${count} clients connected to ${NEW_MESSAGE_CHANNEL} channel`);
+    console.log(
+      `${count} clients subscribes to ${NEW_MESSAGE_CHANNEL} channel`
+    );
   });
 
-  subscriber.on("message", (channel, message) => {
+  subscriber.on("message", (channel, text) => {
     if (channel === CONNECTION_COUNT_UPDATED_CHANNEL) {
-      /* @ts-ignore */
-      server.io.emit(CONNECTION_COUNT_UPDATED_CHANNEL, {
-        count: message,
+      // @ts-ignore
+      app.io.emit(CONNECTION_COUNT_UPDATED_CHANNEL, {
+        count: text,
       });
 
       return;
     }
 
     if (channel === NEW_MESSAGE_CHANNEL) {
-      /* @ts-ignore */
-      server.io.emit(NEW_MESSAGE_CHANNEL, {
-        message: message,
+      // @ts-ignore
+      app.io.emit(NEW_MESSAGE_CHANNEL, {
+        message: text,
         id: randomUUID(),
         createdAt: new Date(),
         port: PORT,
@@ -133,45 +135,44 @@ async function buildServer() {
     }
   });
 
-  server.get("/healthcheck", () => {
-    return { status: "ok", port: PORT };
+  app.get("/healthcheck", () => {
+    return {
+      status: "ok",
+      port: PORT,
+    };
   });
 
-  return server;
+  return app;
 }
 
 async function main() {
-  const server = await buildServer();
+  const app = await buildServer();
 
   try {
-    await server.listen({
+    await app.listen({
       port: PORT,
       host: HOST,
     });
 
-    closeWithGrace({ delay: 500 }, async () => {
-      console.log("shutting down");
+    closeWithGrace({ delay: 500 }, async ({ signal, err }) => {
+      if (connectedClients > 0 || signal === "SIGTERM") {
+        const clientsOnRedis = await publisher.get(CONNECTION_COUNT_KEY);
+        const currentCount = parseInt(clientsOnRedis || "0", 10);
 
-      if (connectedClients > 0) {
-        console.log(`Removing ${connectedClients} from the count`);
-
-        const currentCount = parseInt(
-          (await publisher.get(CONNECTION_COUNT_KEY)) || "0",
-          10
-        );
-
-        const newCount = Math.min(currentCount - connectedClients, 0);
+        const newCount = Math.max(connectedClients - currentCount, 0);
 
         await publisher.set(CONNECTION_COUNT_KEY, newCount);
       }
+      if (err) {
+        console.error(err);
+      }
 
-      await server.close();
-      console.log("Shutdown completed");
+      await app.close();
     });
 
-    console.log(`Server is listening on ${HOST}:${PORT}`);
-  } catch (err) {
-    console.error(err);
+    console.log(`Server started at http://${HOST}:${PORT}`);
+  } catch (e) {
+    console.error(e);
     process.exit(1);
   }
 }
