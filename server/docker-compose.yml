@@ -1,0 +1,52 @@
+version: "3"
+
+services:
+  redis-socket-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - CORS_ORIGIN=${CORS_ORIGIN}
+      - UPSTASH_REDIS_REST_URI=${UPSTASH_REDIS_REST_URI}
+
+  redis-socket-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3002"
+    environment:
+      - PORT=3002
+      - CORS_ORIGIN=${CORS_ORIGIN}
+      - UPSTASH_REDIS_REST_URI=${UPSTASH_REDIS_REST_URI}
+
+  redis-socket-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3003:3003"
+    environment:
+      - PORT=3003
+      - CORS_ORIGIN=${CORS_ORIGIN}
+      - UPSTASH_REDIS_REST_URI=${UPSTASH_REDIS_REST_URI}
+
+  caddy:
+    image: caddy/caddy:2.7.3-alpine
+    container_name: caddy-server
+    restart: unless-stopped
+    ports:
+      - "80:80" # http connector
+      - "443:443" # https connector
+    volumes:
+      - $PWD/Caddyfile:etc/caddy/Caddyfile # present working directory
+      - $PWD/site:/srv
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
