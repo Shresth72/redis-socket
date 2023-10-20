@@ -42,7 +42,7 @@ services:
       - "80:80" # http connector
       - "443:443" # https connector
     volumes:
-      - $PWD/Caddyfile:etc/caddy/Caddyfile # present working directory
+      - $PWD/Caddyfile:/etc/caddy/Caddyfile # present working directory
       - $PWD/site:/srv
       - caddy_data:/data
       - caddy_config:/config
