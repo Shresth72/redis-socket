@@ -4,7 +4,7 @@ WORKDIR /app
 COPY src ./src
 COPY package*.json ./
 COPY tsconfig*.json ./
-RUN npm install
+RUN npm install 
 
 # Stage 2 - Build the app
 FROM base AS build
