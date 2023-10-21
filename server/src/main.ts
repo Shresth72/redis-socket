@@ -48,10 +48,6 @@ async function buildServer() {
 
   // @ts-ignore
   app.io.on("connection", async (io) => {
-    if (connectedClients === 0) {
-      publisher.set(CONNECTION_COUNT_KEY, 0);
-    }
-
     const incResult = await publisher.incr(CONNECTION_COUNT_KEY);
 
     connectedClients++;
